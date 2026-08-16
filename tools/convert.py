@@ -10,6 +10,7 @@ Paths come from the environment, so nothing here needs editing per machine:
     TRELLIS_MODELS    TRELLIS.2 checkpoint tree
     PIXAL3D_MODELS    Pixal3D checkpoint tree (and naf/naf_release.pth)
     TRELLIS_GGUF_OUT  where the .gguf files are written
+    NAF_CKPT          full path to naf_release.pth (default PIXAL3D_MODELS/naf/)
 
 Design:
   * safetensors is parsed by hand (the numpy backend can't read bf16), so we
@@ -96,7 +97,9 @@ PIXAL3D_MANIFEST = {
                        f"{MODELS}/dinov3/config.json",                              "dinov3-vitl16"),
     "birefnet":       (f"{MODELS}/birefnet/model.safetensors",
                        f"{MODELS}/birefnet/config.json",                            "birefnet-swinl"),
-    "naf":            (f"{PIXAL3D}/naf/naf_release.pth", None,                      "naf-upsampler"),
+    # NAF is a separate project's release, not part of the Pixal3D checkpoint tree, so point
+    # NAF_CKPT straight at the .pth wherever it was downloaded.
+    "naf":            (os.environ.get("NAF_CKPT", f"{PIXAL3D}/naf/naf_release.pth"), None, "naf-upsampler"),
 }
 
 if FAMILY == "pixal3d":
