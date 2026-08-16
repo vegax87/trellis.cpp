@@ -4,6 +4,7 @@
 #include "trellis_model.h"
 #include "preprocess.h"
 #include "dinov3.h"
+#include "pixal3d.h"
 #include "flow_runner.h"
 #include "ss_decoder.h"
 #include "shape_decoder.h"
@@ -14,6 +15,7 @@
 #include "remesh_dc.h"
 #include "stb_image_write.h"
 #include "trellis_run.h"
+#include "ggml.h"   // proj_in_channels is read straight off the checkpoint's proj_linear weight
 
 #include <cstdio>
 #include <random>
@@ -23,6 +25,7 @@
 #include <set>
 #include <array>
 #include <cmath>
+#include <stdexcept>
 
 using std::vector;
 static double now() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
@@ -69,6 +72,26 @@ int trellis_run(const trellis::TrellisParams& cfg) {
     const std::string& M = cfg.models;
     const int gpu = cfg.gpu;
     const bool cascade = cfg.cascade;   // 1024 cascade is the TRELLIS default; --res 512 forces the light path
+
+    // --model pixal3d. Everything below the conditioning — sampler schedules, guidance, the SS /
+    // shape / texture decoders, the remesh and the bake — is shared with TRELLIS.2; only how the
+    // image enters each DiT changes. See pixal3d.h.
+    const bool pix = cfg.family == trellis::ModelFamily::Pixal3D;
+    trellis::CameraParams cam;
+    if (pix) {
+        constexpr float PIXAL3D_DEFAULT_FOV = 0.8575560450553894f;   // radians (~49.13 deg)
+        const float fov = cfg.fov_deg > 0.0f ? cfg.fov_deg * 3.14159265358979f / 180.0f
+                                             : PIXAL3D_DEFAULT_FOV;
+        // The distance is derived at 512 on purpose: the projection is resolution-independent
+        // once normalized, so one camera serves both the 512 and the 1024 stages.
+        cam = trellis::pixal3d_camera(fov, cfg.mesh_scale, 512, 0);
+        printf("[trellis] model family: pixal3d (fov %.2f deg, distance %.4f, mesh scale %.2f)\n",
+               fov * 180.0f / 3.14159265358979f, cam.distance, cam.mesh_scale);
+        if (cfg.fov_deg <= 0.0f)
+            printf("      (using Pixal3D's default FOV — MoGe-2 estimation is not ported; pass"
+                   " --fov if the object's perspective is noticeably wider or flatter)\n");
+    }
+
     std::mt19937 rng(run_seed); std::normal_distribution<float> randn(0.f, 1.f);
     auto noise = [&](size_t n){ vector<float> v(n); for (auto& x : v) x = randn(rng); return v; };
     double t0 = now();
@@ -121,12 +144,28 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         if (cfg.bg_only) { printf("[bg-only] done (%.1fs)\n", now() - t0); return 0; }
     }
 
+    // Raw [0,1] guides for NAF. The DINOv3 branch wants the ImageNet-normalized tensor; NAF's
+    // image encoder wants the unnormalized one, so both are kept.
+    vector<float> guide, guide1024;
+    if (pix && cfg.naf) {
+        guide = trellis::cutout_to_chw01(cutout, cut_sz, 512);
+        if (cascade) guide1024 = trellis::cutout_to_chw01(cutout, cut_sz, 1024);
+    }
+
     printf("[2/6] DINOv3 conditioning\n");
-    vector<float> cond, cond1024;
+    vector<float> dino, dino1024;       // full token stream: 5 global + (S/16)^2 patches
     { trellis::Model m = trellis::Model::load(M + "/dinov3.gguf", gpu);
-      cond = trellis::dinov3_encode(m, chw, 512);
-      if (cascade) cond1024 = trellis::dinov3_encode(m, chw1024, 1024);
+      dino = trellis::dinov3_encode(m, chw, 512);
+      if (cascade) dino1024 = trellis::dinov3_encode(m, chw1024, 1024);
       m.free(); }
+    // TRELLIS.2 cross-attends over every token. Pixal3D cross-attends over the 5 global tokens
+    // (cls + registers) only and routes the patch grid through the projection branch instead, so
+    // the cross-attention context is just a prefix of the same tensor.
+    constexpr size_t N_GLOBAL_FLOAT = 5 * 1024;
+    vector<float> cond    = pix ? vector<float>(dino.begin(), dino.begin() + N_GLOBAL_FLOAT) : dino;
+    vector<float> cond1024;
+    if (cascade)
+        cond1024 = pix ? vector<float>(dino1024.begin(), dino1024.begin() + N_GLOBAL_FLOAT) : dino1024;
     const int Lc = (int)(cond.size() / 1024);
     vector<float> neg(cond.size(), 0.0f);
     const int Lc1024 = cascade ? (int)(cond1024.size() / 1024) : 0;
@@ -135,15 +174,55 @@ int trellis_run(const trellis::TrellisParams& cfg) {
     slat_stats("cond_512 (DINOv3@512)", cond);
     if (cascade) slat_stats("cond_1024 (DINOv3@1024)", cond1024);
 
+    // Per-stage projection conditioning. `proj_ch` is read off the stage's own proj_linear rather
+    // than guessed from a config, which also doubles as the check that a --model pixal3d run is
+    // pointed at Pixal3D weights (and a --model trellis run is not).
+    auto proj_ch_of = [&](const trellis::Model& m) -> int {
+        ggml_tensor* w = m.try_get("blocks.0.cross_attn.proj_linear.weight");
+        if (pix && !w)
+            throw std::runtime_error("--model pixal3d but the checkpoint has no cross_attn.proj_linear "
+                                     "(these are TRELLIS.2 weights)");
+        if (!pix && w)
+            throw std::runtime_error("--model trellis but the checkpoint has cross_attn.proj_linear "
+                                     "(these are Pixal3D weights; pass --model pixal3d)");
+        return w ? (int)w->ne[0] : 0;
+    };
+    // grid_res: the stage's projection grid. S / naf_out: the DINOv3 image size the stage was
+    // trained on and its NAF target, both taken from the Pixal3D stage configs.
+    auto build_proj = [&](int grid_res, int S, int naf_out, int proj_ch,
+                          const vector<std::array<int,3>>* cds) {
+        const vector<float>& dn = (S == 1024) ? dino1024 : dino;
+        const vector<float>& gd = (S == 1024) ? guide1024 : guide;
+        const bool want_naf = (proj_ch == 2048) && cfg.naf;
+        trellis::ProjCond pc;
+        if (want_naf) {
+            trellis::Model nm = trellis::Model::load(M + "/naf.gguf", gpu);
+            pc = trellis::pixal3d_proj_cond(dn, S, grid_res, proj_ch, cam, cds, &nm, &gd, naf_out);
+            nm.free();
+        } else {
+            pc = trellis::pixal3d_proj_cond(dn, S, grid_res, proj_ch, cam, cds, nullptr, nullptr, naf_out);
+        }
+        printf("      proj cond: grid %d^3, image %d, %d ch%s\n", grid_res, S, proj_ch,
+               proj_ch == 2048 ? (want_naf ? ", NAF upsampled" : ", NAF DISABLED") : "");
+        return pc;
+    };
+
     printf("[3/6] sparse-structure flow + decode\n");
     vector<std::array<int,3>> coords;
     {
         trellis::Model m = trellis::Model::load(M + "/ss_flow.gguf", gpu);
         trellis::DiTParams p; p.in_ch = 8; p.out_ch = 8; p.d_cond = 1024; p.cast_f32 = F32;
+        p.proj_ch = proj_ch_of(m); p.proj_mode = p.proj_ch > 0;
+        // The sparse-structure DiT is dense at 16^3, and Pixal3D's SS stage projects a 16^3 grid,
+        // so its proj tokens line up one-to-one with the DiT tokens in the same x-major order.
+        trellis::ProjCond pc;
+        if (pix) pc = build_proj(16, 512, 0, p.proj_ch, nullptr);
         trellis::DitRunner* run = trellis::make_dense_runner(m, p, 16, Lc);
-        trellis::FlowFwd fwd = [&](const vector<float>& x, float ts, const float* c){ return run->forward(x, ts, c); };
+        trellis::FlowFwd fwd = [&](const vector<float>& x, float ts, const trellis::FlowCond& c){ return run->forward(x, ts, c); };
         trellis::SamplerParams sp; sp.steps=12; sp.guidance_strength=cfg.gss; sp.guidance_rescale=0.7f; sp.gi0=0.6f; sp.gi1=1.0f; sp.rescale_t=5.0f;
-        vector<float> z = trellis::sample_flow(fwd, noise(8*4096), cond.data(), neg.data(), sp);  // [8,4096] ne0=8
+        vector<float> z = trellis::sample_flow(fwd, noise(8*4096),
+                              trellis::FlowCond(cond.data(), pix ? pc.proj.data()     : nullptr),
+                              trellis::FlowCond(neg.data(),  nullptr), sp);  // [8,4096] ne0=8
         delete run; m.free();
         // transpose [8,L] -> torch [8,16,16,16] memory (c*4096 + sp)
         vector<float> zdec(8*4096);
@@ -156,18 +235,34 @@ int trellis_run(const trellis::TrellisParams& cfg) {
     printf("      active voxels @res32 = %d\n", (int)coords.size());
     if (coords.empty()) { fprintf(stderr, "no voxels produced\n"); return 1; }
 
-    const bool do_tex = cfg.texture;
+    bool do_tex = cfg.texture;
+    // Pixal3D publishes a single (1024) texture flow, where TRELLIS.2 publishes both. The light
+    // --res 512 path has no texture model to run at all, so it degrades to geometry only.
+    if (do_tex && pix && !cascade) {
+        FILE* tf = fopen((M + "/tex_flow_512.gguf").c_str(), "rb");
+        if (tf) fclose(tf);
+        else { printf("      (pixal3d ships no res-512 texture flow -- writing geometry only)\n"); do_tex = false; }
+    }
 
     // one shape SLAT flow run -> normalized [32,n] (sparse, CFG 7.5, gi[0.6,1], rescale_t 3)
+    // `grid_res` is the resolution the sparse coords are expressed in — the same grid Pixal3D
+    // projects for this stage — and S / naf_out are the stage's DINOv3 image size and NAF target.
+    // They are ignored in TRELLIS.2 mode.
     auto shape_flow = [&](const std::string& path, const vector<std::array<int,3>>& cds,
-                          const float* cnd, const float* ncnd, int lc) {
+                          const float* cnd, const float* ncnd, int lc,
+                          int grid_res, int S, int naf_out) {
         const int n = (int)cds.size();
         trellis::Model m = trellis::Model::load(path, gpu);
         trellis::DiTParams p; p.in_ch = 32; p.out_ch = 32; p.d_cond = 1024; p.cast_f32 = F32;
+        p.proj_ch = proj_ch_of(m); p.proj_mode = p.proj_ch > 0;
+        trellis::ProjCond pc;
+        if (pix) pc = build_proj(grid_res, S, naf_out, p.proj_ch, &cds);
         trellis::DitRunner* run = trellis::make_sparse_runner(m, p, cds, lc);
-        trellis::FlowFwd fwd = [&](const vector<float>& x, float ts, const float* c){ return run->forward(x, ts, c); };
+        trellis::FlowFwd fwd = [&](const vector<float>& x, float ts, const trellis::FlowCond& c){ return run->forward(x, ts, c); };
         trellis::SamplerParams sp; sp.steps=12; sp.guidance_strength=cfg.gsh; sp.guidance_rescale=0.5f; sp.gi0=0.6f; sp.gi1=1.0f; sp.rescale_t=3.0f;
-        vector<float> sn = trellis::sample_flow(fwd, noise((size_t)32*n), cnd, ncnd, sp);   // [32,n]
+        vector<float> sn = trellis::sample_flow(fwd, noise((size_t)32*n),
+                               trellis::FlowCond(cnd,  pix ? pc.proj.data()     : nullptr),
+                               trellis::FlowCond(ncnd, nullptr), sp);   // [32,n]
         delete run; m.free();
         return sn;
     };
@@ -194,7 +289,8 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         const int max_tok   = cfg.max_tokens;
         printf("[4/7] shape SLAT flow (LR 512 -> upsample -> HR %d cascade, max_tok=%d)\n", hr_target, max_tok);
         // (1) LR shape flow @res32 with cond_512
-        lr_norm = shape_flow(M + "/shape_flow_512.gguf", coords, cond.data(), neg.data(), Lc);
+        lr_norm = shape_flow(M + "/shape_flow_512.gguf", coords, cond.data(), neg.data(), Lc,
+                             /*grid_res=*/32, /*S=*/512, /*naf_out=*/512);
         lr_dn.resize(lr_norm.size());
         for (size_t n = 0; n < coords.size(); ++n) for (int c = 0; c < 32; ++c)
             lr_dn[(size_t)c + 32*n] = lr_norm[(size_t)c + 32*n]*SHAPE_STD[c] + SHAPE_MEAN[c];
@@ -223,13 +319,17 @@ int trellis_run(const trellis::TrellisParams& cfg) {
                    hr_res, gi, (int)q.size(), max_tok);
             hr_res -= 128;
         }
-        // (4) HR shape flow @res(hr_res//16) with cond_1024
-        slat_norm = shape_flow(M + "/shape_flow_1024.gguf", shc, cond1024.data(), neg1024.data(), Lc1024);
+        // (4) HR shape flow @res(hr_res//16) with cond_1024. The projection grid follows the same
+        //     backoff as the token grid — Pixal3D overrides its cond model's grid_resolution to
+        //     hr_res//16 for exactly this reason — while the NAF target stays at the stage's 512.
+        slat_norm = shape_flow(M + "/shape_flow_1024.gguf", shc, cond1024.data(), neg1024.data(), Lc1024,
+                               /*grid_res=*/hr_res / 16, /*S=*/1024, /*naf_out=*/512);
         RES = hr_res; cond_dec = cond1024.data(); neg_dec = neg1024.data(); Lc_dec = Lc1024;
     } else {
         printf("[4/7] shape SLAT flow (512)\n");
         shc = coords;
-        slat_norm = shape_flow(M + "/shape_flow_512.gguf", coords, cond.data(), neg.data(), Lc);
+        slat_norm = shape_flow(M + "/shape_flow_512.gguf", coords, cond.data(), neg.data(), Lc,
+                               /*grid_res=*/32, /*S=*/512, /*naf_out=*/512);
     }
     const int N = (int)shc.size();
     slat_dn.resize(slat_norm.size());
@@ -282,7 +382,9 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         constexpr int DENSE_TEX = 9000000;
         const int tex_res = cfg.tex_res > 0 ? cfg.tex_res
                           : (cascade && (int)so.coords.size() > DENSE_TEX ? 512 : RES);
-        const bool mixed = cascade && tex_res != RES;   // res-1024 geometry + res-512 texture
+        // res-1024 geometry + res-512 texture. The shortcut needs a res-512 texture flow, which
+        // only TRELLIS.2 publishes, so Pixal3D always textures at the cascade resolution.
+        const bool mixed = cascade && tex_res != RES && !pix;
         printf("[6/7] texture SLAT flow + PBR decode%s\n", mixed ? "  (res-512 texture on res-1024 mesh)" : "");
 
         if (mixed) {   // decode a res-512 shape (from the LR slat) to guide the res-512 tex decode
@@ -301,14 +403,24 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         const int    tlc   = mixed ? Lc : Lc_dec;
         const int    tN    = (int)tcoords.size();
         const std::vector<std::vector<uint8_t>>& tsubs = mixed ? so_tex.subs : so.subs;
+        // The texture stage's projection follows whichever branch supplied its coords: the
+        // res-512 tex model (grid 32 @512) or the HR one (grid RES/16 @1024). Unlike the shape
+        // stages, Pixal3D's texture models upsample to the full image size.
+        const bool tex_lr = mixed || !cascade;
+        const int tgrid = tex_lr ? 32  : RES / 16;
+        const int tS    = tex_lr ? 512 : 1024;
+        const int tnaf  = tex_lr ? 256 : 1024;
 
         vector<float> texlat;
         {
             trellis::Model m = trellis::Model::load(tflow, gpu);
             trellis::DiTParams p; p.in_ch = 64; p.out_ch = 32; p.d_cond = 1024; p.cast_f32 = F32;
+            p.proj_ch = proj_ch_of(m); p.proj_mode = p.proj_ch > 0;
+            trellis::ProjCond pc;
+            if (pix) pc = build_proj(tgrid, tS, tnaf, p.proj_ch, &tcoords);
             trellis::DitRunner* run = trellis::make_sparse_runner(m, p, tcoords, tlc);
             // state is the 32-ch noise; each forward concat [noise(32) ; shape_slat_norm(32)] -> 64ch
-            trellis::FlowFwd fwd = [&](const vector<float>& st, float ts, const float* c) {
+            trellis::FlowFwd fwd = [&](const vector<float>& st, float ts, const trellis::FlowCond& c) {
                 vector<float> x64((size_t)64 * tN);
                 for (int n = 0; n < tN; ++n) {
                     for (int k = 0; k < 32; ++k) x64[(size_t)k + 64*n]      = st[(size_t)k + 32*n];
@@ -317,7 +429,9 @@ int trellis_run(const trellis::TrellisParams& cfg) {
                 return run->forward(x64, ts, c);
             };
             trellis::SamplerParams sp; sp.steps=12; sp.guidance_strength=1.0f; sp.guidance_rescale=0.0f; sp.gi0=0.6f; sp.gi1=0.9f; sp.rescale_t=3.0f;
-            texlat = trellis::sample_flow(fwd, noise((size_t)32*tN), tcond, tneg, sp);  // [32,tN]
+            texlat = trellis::sample_flow(fwd, noise((size_t)32*tN),
+                         trellis::FlowCond(tcond, pix ? pc.proj.data()     : nullptr),
+                         trellis::FlowCond(tneg,  nullptr), sp);  // [32,tN]
             delete run; m.free();
             for (int n = 0; n < tN; ++n) for (int c = 0; c < 32; ++c) texlat[(size_t)c + 32*n] = texlat[(size_t)c + 32*n]*TEX_STD[c] + TEX_MEAN[c];
         }

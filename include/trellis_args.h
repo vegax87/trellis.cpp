@@ -12,6 +12,15 @@ extern bool g_no_fa;            // defined in dit.cpp           (TRELLIS_NOFA)
 extern bool g_require_gpu;      // defined in trellis_model.cpp (TRELLIS_REQUIRE_GPU)
 extern int  g_cpu_threads;      // defined in trellis_model.cpp (TRELLIS_THREADS)
 
+// Which family of flow weights the GGUF directory holds. Both share the TRELLIS.2 DiT,
+// sampler and decoders; they differ only in how the image conditions the flow — see pixal3d.h.
+enum class ModelFamily {
+    Trellis,   // TRELLIS.2: cross-attention over every DINOv3 token
+    Pixal3D,   // Pixal3D: 5 global tokens + per-token view-aligned projection
+};
+
+const char* model_family_name(ModelFamily f);
+
 // Every knob for one TRELLIS.2 image->3D run. Resolved as default -> environment
 // (the historical TRELLIS_* / GSS / GSH names) -> CLI flag, with the CLI winning.
 // trellis-cli and trellis-server share the parser: the server runs it once for its
@@ -25,6 +34,17 @@ struct TrellisParams {
     int      port = 8080;                                       // trellis-server only
     int      gpu  = 0;                                          // >=0 GPU index, <0 CPU
     uint32_t seed = 0;
+
+    ModelFamily family = ModelFamily::Trellis;   // --model trellis|pixal3d
+    // Pixal3D only. The projection needs the camera the image was "taken" with: upstream
+    // estimates the horizontal FOV with MoGe-2 and derives the distance from it in closed form.
+    // MoGe-2 is not ported, so the FOV is a flag; 0 keeps Pixal3D's own default (49.13 deg).
+    float fov_deg    = 0.0f;
+    float mesh_scale = 1.0f;
+    // NAF guided upsampling of the DINOv3 feature map (the shape/texture stages' second proj
+    // branch). Off falls back to sampling the bare feature map twice, which halves the effective
+    // proj input — accepted only as a way to run without naf.gguf.
+    bool naf = true;
 
     bool cascade    = true;     // 1024 cascade (default); --res 512 selects the light path
     int  hr_res     = 1024;     // HR cascade target resolution (1024 / 1536)

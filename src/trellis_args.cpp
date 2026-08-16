@@ -7,6 +7,10 @@
 
 namespace trellis {
 
+const char* model_family_name(ModelFamily f) {
+    return f == ModelFamily::Pixal3D ? "pixal3d" : "trellis";
+}
+
 void print_usage(const char* argv0, bool server) {
     if (server) {
         fprintf(stderr,
@@ -24,6 +28,18 @@ void print_usage(const char* argv0, bool server) {
         "  -o, --output PATH       output .glb                  (default model.glb)\n"
         "      --copyright TEXT    glTF asset.copyright metadata\n"
         "  -m, --models DIR        GGUF model directory\n"
+        "      --model FAMILY      trellis (default) | pixal3d — which flow weights the model\n"
+        "                          directory holds. pixal3d swaps the DINOv3 cross-attention for\n"
+        "                          view-aligned projection conditioning; the samplers, decoders\n"
+        "                          and every postprocessing stage are shared.\n"
+        "      --fov DEG           pixal3d: horizontal field of view of the input image, which\n"
+        "                          fixes the projection camera (default 49.13, Pixal3D's own).\n"
+        "                          Upstream estimates this with MoGe-2; that model is not ported,\n"
+        "                          so a wrong FOV shows up as geometry drifting off the silhouette.\n"
+        "      --mesh-scale F      pixal3d: object scale inside the unit grid   (default 1.0)\n"
+        "      --no-naf            pixal3d: skip NAF guided upsampling (needs no naf.gguf, but\n"
+        "                          the shape/texture stages then lose their high-frequency\n"
+        "                          projection branch)\n"
         "      --gpu N             GPU index, <0 = CPU          (default 0)\n"
         "  -s, --seed N            RNG seed                     (default 42)\n"
         "      --res 512|1024|1536 geometry resolution\n"
@@ -78,6 +94,13 @@ bool parse_args(int argc, char** argv, TrellisParams& p) {
         else if (a == "-o" || a == "--output")  { const char* v = need(a.c_str()); if (!v) return false; p.output = v; }
         else if (a == "--copyright")            { const char* v = need(a.c_str()); if (!v) return false; p.copyright = v; }
         else if (a == "-m" || a == "--models")  { const char* v = need(a.c_str()); if (!v) return false; p.models = v; }
+        else if (a == "--model")                { const char* v = need(a.c_str()); if (!v) return false;
+                                                  if      (std::strcmp(v, "trellis") == 0) p.family = ModelFamily::Trellis;
+                                                  else if (std::strcmp(v, "pixal3d") == 0) p.family = ModelFamily::Pixal3D;
+                                                  else { fprintf(stderr, "[trellis] unknown model family: %s (trellis|pixal3d)\n", v); return false; } }
+        else if (a == "--fov")                  { const char* v = need(a.c_str()); if (!v) return false; p.fov_deg = (float)atof(v); }
+        else if (a == "--mesh-scale")           { const char* v = need(a.c_str()); if (!v) return false; p.mesh_scale = (float)atof(v); }
+        else if (a == "--no-naf")               { p.naf = false; }
         else if (a == "--gpu")                  { const char* v = need(a.c_str()); if (!v) return false; p.gpu = atoi(v); }
         else if (a == "-s" || a == "--seed")    { const char* v = need(a.c_str()); if (!v) return false; p.seed = (uint32_t)atoi(v); }
         else if (a == "--res")                  { const char* v = need(a.c_str()); if (!v) return false; p.set_res(atoi(v)); }
