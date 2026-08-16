@@ -122,6 +122,11 @@ taps of each grid point, deduplicated) rather than for the whole upsampled map.
 
 Two consequences worth knowing:
 
+- **The texture stage is the memory peak.** It upsamples to the full 1024, so the guide
+  encoder runs at 1024² and the query map alone is ~1 GB host, plus up to ~800 MB of
+  attended pixels at the 49152-token budget, plus the ~2.4 GB im2col below — all while
+  the 1.3B flow model is resident. If a 16 GB device OOMs there, lower `--max-tokens`
+  or fall back to `--no-naf`.
 - The guide encoder runs at the full image size in ggml. `ggml_conv_2d` goes through
   im2col, which materializes ~2.4 GB for the 1024-guide blocks. Set
   `TRELLIS_NAF_CONV_DIRECT=1` to use `ggml_conv_2d_direct` instead where the backend
@@ -131,10 +136,13 @@ Two consequences worth knowing:
   roughly on-distribution, but every high-frequency cue the second branch was trained
   to carry is gone. It is an escape hatch, not an equivalent.
 
-The one piece not verified numerically against upstream is NATTEN's border rule, which
-would need `natten` installed to A/B. The window derivation above is NATTEN's
-documented semantics, and the interior — where essentially every projected point lands
-— is unaffected by it.
+The port was checked end to end against an independent transcription of the reference
+(`naf.py` + `layers/{convolutions,rope,attentions}.py`) driven by random weights, on
+both a pooled and an unpooled configuration, with sample points outside the frame to
+exercise the border clamp: **max absolute error 2.3e-6**. The collapsed window and
+NATTEN's own `get_window_start` on the upsampled grid agreed exactly, so the reduction
+above is an identity, not an approximation, for every stage here (it needs
+`length % dilation == 0`, which all four satisfy).
 
 ---
 
@@ -220,9 +228,12 @@ Mismatched weights fail fast rather than producing garbage:
 ## Known gaps
 
 - **MoGe-2 FOV estimation is not ported.** Use `--fov`.
-- **NAF's NATTEN border rule is unverified** against upstream (interior is unaffected).
-- **No end-to-end numerical parity run.** The projection math is pinned to the
-  reference; the full pipeline has not been diffed against the PyTorch implementation
-  on real weights, because that needs the checkpoints and a CUDA box.
+- **No end-to-end numerical parity run on real weights.** The projection is pinned to
+  golden values from the reference and NAF was diffed against a transcription of it
+  under random weights, but the full pipeline has not been run against the PyTorch
+  implementation on the released checkpoints — that needs the weights and a CUDA box.
+- **NAF's pre-downsample branch is not implemented.** It only triggers when the guide
+  exceeds 4× the NAF target, which no Pixal3D stage does; the code refuses rather than
+  diverging if a stage ever would.
 - **Multi-view conditioning is out of scope.** Pixal3D trains with `num_views: 2` but
   the released inference pipeline is single-view, and so is this.

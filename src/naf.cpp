@@ -95,6 +95,11 @@ static T* enc_branch(ggml_context* c, const Model& m, const std::string& pre, T*
 static std::vector<float> encode_guide(const Model& m, const std::vector<float>& img01, int S, int out) {
     if (S % out != 0) throw std::runtime_error("naf: guide size must be a multiple of the target size");
     const int f = S / out;
+    // ImageEncoder.forward bilinearly shrinks the guide before the convolutions once it exceeds
+    // 4x the target size. No Pixal3D stage gets anywhere near that (the largest ratio is 2), so
+    // the branch is not implemented — but refuse rather than silently diverge if one ever does.
+    if (f > 4) throw std::runtime_error("naf: guide more than 4x the target size needs the "
+                                        "reference's pre-downsample branch, which is not ported");
 
     size_t meta = ggml_tensor_overhead() * 4096 + ggml_graph_overhead_custom(8192, false) + (1 << 20);
     ggml_context* c = ggml_init({ meta, nullptr, true });
