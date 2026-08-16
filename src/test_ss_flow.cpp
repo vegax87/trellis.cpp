@@ -89,7 +89,7 @@ int main(int argc, char** argv) {
     ggml_tensor* gsin = ggml_new_tensor_4d(c, GGML_TYPE_F32, 1, half, 1, L);   ggml_set_input(gsin);
 
     std::map<string, ggml_tensor*> inter;
-    ggml_tensor* out = trellis::build_dit_dense(c, m, p, gh0, gtf, gcd, gcos, gsin, &inter);
+    ggml_tensor* out = trellis::build_dit_dense(c, m, p, gh0, gtf, gcd, nullptr, gcos, gsin, &inter);
 
     ggml_cgraph* g = ggml_new_graph_custom(c, 32768, false);
     ggml_build_forward_expand(g, out);

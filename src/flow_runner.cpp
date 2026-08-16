@@ -43,10 +43,15 @@ DitRunner::DitRunner(const Model& m, const DiTParams& p, int N, int n_cond,
     gh0_  = ggml_new_tensor_2d(ctx_, GGML_TYPE_F32, p_.in_ch, N_);   ggml_set_input(gh0_);
     gtf_  = ggml_new_tensor_1d(ctx_, GGML_TYPE_F32, 256);            ggml_set_input(gtf_);
     gcond_= ggml_new_tensor_2d(ctx_, GGML_TYPE_F32, p_.d_cond, Lc_); ggml_set_input(gcond_);
+    if (p_.proj_mode) {
+        if (p_.proj_ch <= 0) throw std::runtime_error("DitRunner: proj mode needs proj_ch");
+        gproj_ = ggml_new_tensor_2d(ctx_, GGML_TYPE_F32, p_.proj_ch, N_); ggml_set_input(gproj_);
+    }
     gcos_ = ggml_new_tensor_4d(ctx_, GGML_TYPE_F32, 1, half, 1, N_); ggml_set_input(gcos_);
     gsin_ = ggml_new_tensor_4d(ctx_, GGML_TYPE_F32, 1, half, 1, N_); ggml_set_input(gsin_);
     dbg_nan_ = std::getenv("TRELLIS_DBG_NAN") != nullptr;
-    gout_ = build_dit_dense(ctx_, m_, p_, gh0_, gtf_, gcond_, gcos_, gsin_, dbg_nan_ ? &inter_ : nullptr);
+    gout_ = build_dit_dense(ctx_, m_, p_, gh0_, gtf_, gcond_, gproj_, gcos_, gsin_,
+                            dbg_nan_ ? &inter_ : nullptr);
     g_ = ggml_new_graph_custom(ctx_, 32768, false);
     ggml_build_forward_expand(g_, gout_);
     ggml_set_output(gout_);
@@ -61,11 +66,17 @@ DitRunner::~DitRunner() {
     if (ctx_)   ggml_free(ctx_);
 }
 
-std::vector<float> DitRunner::forward(const std::vector<float>& xt, float t_scaled, const float* cond) {
+std::vector<float> DitRunner::forward(const std::vector<float>& xt, float t_scaled, const FlowCond& c) {
     std::vector<float> tf; timestep_embedding(t_scaled, tf);
     ggml_backend_tensor_set(gh0_,  xt.data(), 0, xt.size() * 4);
     ggml_backend_tensor_set(gtf_,  tf.data(), 0, tf.size() * 4);
-    ggml_backend_tensor_set(gcond_, cond,     0, (size_t)p_.d_cond * Lc_ * 4);
+    ggml_backend_tensor_set(gcond_, c.cond,   0, (size_t)p_.d_cond * Lc_ * 4);
+    if (gproj_) {
+        const size_t nb = (size_t)p_.proj_ch * N_ * 4;
+        // Re-written every forward: gallocr may hand the same buffer to both CFG branches.
+        if (c.proj) ggml_backend_tensor_set(gproj_, c.proj, 0, nb);
+        else        ggml_backend_tensor_memset(gproj_, 0, 0, nb);
+    }
     ggml_backend_tensor_set(gcos_, rcos_.data(), 0, rcos_.size() * 4);   // re-upload (buffers reused across runs)
     ggml_backend_tensor_set(gsin_, rsin_.data(), 0, rsin_.size() * 4);
     if (ggml_backend_graph_compute(m_.backend, g_) != GGML_STATUS_SUCCESS)
@@ -130,7 +141,7 @@ DitRunner* make_sparse_runner(const Model& m, const DiTParams& p,
 }
 
 std::vector<float> sample_flow(const FlowFwd& fwd, std::vector<float> sample,
-                               const float* cond, const float* neg_cond, const SamplerParams& sp,
+                               const FlowCond& cond, const FlowCond& neg_cond, const SamplerParams& sp,
                                std::vector<std::vector<float>>* trace) {
     const float sm = sp.sigma_min;
     const size_t Nst = sample.size();

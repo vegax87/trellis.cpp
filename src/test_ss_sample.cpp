@@ -27,7 +27,7 @@ int main(int argc, char** argv) {
     trellis::DiTParams p; p.in_ch = (int)Cin; p.out_ch = (int)Cin; p.d_cond = (int)Dc;
     if (getenv("TRELLIS_F32W")) { p.cast_f32 = true; printf("(f32 weight compute)\n"); }
     trellis::DitRunner* run = trellis::make_dense_runner(m, p, (int)R, (int)Lc);
-    trellis::FlowFwd fwd = [&](const std::vector<float>& xt, float ts, const float* cd){ return run->forward(xt, ts, cd); };
+    trellis::FlowFwd fwd = [&](const std::vector<float>& xt, float ts, const trellis::FlowCond& cd){ return run->forward(xt, ts, cd); };
 
     // noise [c*L+sp] -> sample [c + Cin*sp]
     vector<float> sample(Cin * L);

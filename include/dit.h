@@ -22,6 +22,12 @@ struct DiTParams {
     float final_ln_eps = 1e-5f;
     float rms_eps      = 1e-12f;
     bool  cast_f32     = false;   // cast f16 weights to f32 before matmul (precision test)
+    // Pixal3D "proj" image-attention mode. The block layout is identical to TRELLIS.2 except
+    // that the cross-attention module is wrapped: its weights sit one level deeper, under
+    // `cross_attn.cross_attn_block`, and a sibling `cross_attn.proj_linear` maps the per-token
+    // view-aligned feature into model space and is added to the cross-attention output.
+    bool  proj_mode    = false;
+    int   proj_ch      = 0;       // proj_in_channels: 1024 bare, 2048 with the NAF branch
 };
 
 // Build the dense SS-flow forward graph (B=1). All input tensors live in `gctx`
@@ -29,11 +35,12 @@ struct DiTParams {
 //   h0   : [in_ch, L]          patchified input (channel-major)
 //   tfreq: [256]               sinusoidal timestep embedding (host-computed)
 //   cond : [d_cond, Lc]        conditioning tokens
+//   proj : [proj_ch, L]        per-token view-aligned features (proj mode; else nullptr)
 //   cos/sin: [1, head_dim/2, 1, L]  precomputed 3D-RoPE tables
 // Returns the [out_ch, L] velocity; `inter` (optional) collects named intermediates.
 ggml_tensor* build_dit_dense(ggml_context* gctx, const Model& m, const DiTParams& p,
                              ggml_tensor* h0, ggml_tensor* tfreq, ggml_tensor* cond,
-                             ggml_tensor* cos, ggml_tensor* sin,
+                             ggml_tensor* proj, ggml_tensor* cos, ggml_tensor* sin,
                              std::map<std::string, ggml_tensor*>* inter = nullptr);
 
 } // namespace trellis

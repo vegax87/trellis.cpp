@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <stdexcept>
 #include <string>
 
 namespace trellis {
@@ -228,7 +229,7 @@ static T* modulate(ggml_context* c, T* x, T* scale, T* shift) {
     return ggml_add(c, ggml_add(c, x, ggml_mul(c, x, scale)), shift);
 }
 
-static T* block(ggml_context* c, const Model& m, int i, T* h, T* mod, T* cond,
+static T* block(ggml_context* c, const Model& m, int i, T* h, T* mod, T* cond, T* proj,
                 T* cos, T* sin, const DiTParams& p, std::map<std::string, T*>* inter = nullptr,
                 T* self_mask = nullptr, T* cross_mask = nullptr) {
     const std::string b = "blocks." + std::to_string(i);
@@ -246,7 +247,15 @@ static T* block(ggml_context* c, const Model& m, int i, T* h, T* mod, T* cond,
     h = ggml_add(c, h, ggml_mul(c, hh, gate_msa));
 
     hh = layernorm(c, h, p.ln_eps, m.get(b + ".norm2.weight"), m.get(b + ".norm2.bias"));
-    hh = cross_attn(c, m, b + ".cross_attn", hh, cond, p, cross_mask);
+    if (p.proj_mode) {
+        // ProjectAttention: cross_attn_block(h, global_tokens) + proj_linear(view_aligned).
+        // The sum REPLACES the cross-attention output as the residual branch (both the dense
+        // and the sparse Pixal3D modules do exactly this), so the add below is unchanged.
+        hh = cross_attn(c, m, b + ".cross_attn.cross_attn_block", hh, cond, p, cross_mask);
+        hh = ggml_add(c, hh, lin(c, m, b + ".cross_attn.proj_linear", proj));
+    } else {
+        hh = cross_attn(c, m, b + ".cross_attn", hh, cond, p, cross_mask);
+    }
     dbg("blk0_cross", hh);
     h = ggml_add(c, h, hh);
 
@@ -261,9 +270,10 @@ static T* block(ggml_context* c, const Model& m, int i, T* h, T* mod, T* cond,
 }
 
 ggml_tensor* build_dit_dense(ggml_context* c, const Model& m, const DiTParams& p,
-                             T* h0, T* tfreq, T* cond, T* cos, T* sin,
+                             T* h0, T* tfreq, T* cond, T* proj, T* cos, T* sin,
                              std::map<std::string, T*>* inter) {
     g_cast_f32 = p.cast_f32;
+    if (p.proj_mode && !proj) throw std::runtime_error("build_dit_dense: proj mode needs a proj input");
     auto keep = [&](const char* n, T* t) { if (inter) (*inter)[n] = t; ggml_set_name(t, n); return t; };
 
     T* h = lin(c, m, "input_layer", h0);                       // [d_model, L]
@@ -281,7 +291,7 @@ ggml_tensor* build_dit_dense(ggml_context* c, const Model& m, const DiTParams& p
     T* self_mask  = build_pad_mask(c, h0->ne[1], h0->ne[1]);
     T* cross_mask = build_pad_mask(c, cond->ne[1], h0->ne[1]);
     for (int i = 0; i < p.n_blocks; ++i) {
-        h = block(c, m, i, h, mod, cond, cos, sin, p, inter, self_mask, cross_mask);
+        h = block(c, m, i, h, mod, cond, proj, cos, sin, p, inter, self_mask, cross_mask);
         if (i == 0) keep("after_block0", h);
         if (i == 1) keep("after_block1", h);
         if (i == p.n_blocks - 1) keep("after_block29", h);
