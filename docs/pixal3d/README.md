@@ -148,6 +148,17 @@ above is an identity, not an approximation, for every stage here (it needs
 
 ## Models
 
+**Pre-built GGUFs:** [`vegax87/Pixal3D`](https://huggingface.co/vegax87/Pixal3D) — the five
+Pixal3D-specific files, already named as the loader expects. Drop them into the model
+directory you already use for TRELLIS.2:
+
+```bash
+for f in ss_flow shape_flow_512 shape_flow_1024 tex_flow_1024 naf; do
+  curl -fL -o "$MODELS/pixal3d_$f.gguf" \
+    "https://huggingface.co/vegax87/Pixal3D/resolve/main/pixal3d_$f.gguf"
+done
+```
+
 **One model directory serves both families.** Pixal3D's checkpoints carry the same
 upstream filenames as TRELLIS.2's, so the family-specific ones are written with a
 `pixal3d_` prefix. Everything that is byte-identical between the two keeps its plain
@@ -165,12 +176,22 @@ a second copy of everything.
 | `dinov3.gguf` | DINOv3 ViT-L/16 | **yes** |
 | `birefnet.gguf` | BiRefNet | **yes** |
 
-Convert with the same tool; the prefix is applied automatically:
+To convert from the source checkpoints instead, the same tool handles both families and
+applies the prefix automatically. Paths come from the environment, so nothing in the
+script needs editing:
 
 ```bash
-TRELLIS_FAMILY=pixal3d python tools/convert.py             # everything
-TRELLIS_FAMILY=pixal3d python tools/convert.py naf         # just the upsampler
+export TRELLIS_FAMILY=pixal3d
+export PIXAL3D_MODELS=/path/to/TencentARC-Pixal3D    # the ckpts/ tree
+export TRELLIS_GGUF_OUT=/path/to/models
+export NAF_CKPT=/path/to/naf_release.pth             # optional; defaults to $PIXAL3D_MODELS/naf/
+
+python tools/convert.py             # everything
+python tools/convert.py naf         # just the upsampler
 ```
+
+NAF is the one component read through torch rather than safetensors, because it ships as
+a `.pth` GitHub release. It converts to ~1.3 MB: only `image_encoder.*` carries weights.
 
 Tensor names are preserved verbatim, so the extra `proj_linear` / `cross_attn_block`
 tensors need no remapping.

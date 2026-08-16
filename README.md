@@ -133,7 +133,8 @@ The shape/texture stages also run the NAF guided feature upsampler, ported in
 
 Both families use the **same model directory**: the Pixal3D flows and NAF are named
 `pixal3d_*.gguf`, while the decoders, DINOv3 and BiRefNet are byte-identical and shared,
-so adding Pixal3D to a working TRELLIS.2 set is 5 new files. See
+so adding Pixal3D to a working TRELLIS.2 set is 5 new files — pre-built at
+[`vegax87/Pixal3D`](https://huggingface.co/vegax87/Pixal3D). See
 **[docs/pixal3d/README.md](docs/pixal3d/README.md)** for the model list, the `--fov`
 camera flag (MoGe-2 estimation is not ported) and the known gaps.
 
