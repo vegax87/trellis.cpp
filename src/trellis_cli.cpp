@@ -77,6 +77,11 @@ int trellis_run(const trellis::TrellisParams& cfg) {
     // shape / texture decoders, the remesh and the bake — is shared with TRELLIS.2; only how the
     // image enters each DiT changes. See pixal3d.h.
     const bool pix = cfg.family == trellis::ModelFamily::Pixal3D;
+    // Both families live in ONE model directory. The flows and NAF are family-specific and carry
+    // a `pixal3d_` prefix; the decoders, DINOv3 and BiRefNet are byte-identical between the two
+    // and keep their plain names, so adding Pixal3D to an existing TRELLIS.2 set is 5 new files
+    // rather than a second copy of everything.
+    const std::string FP = pix ? "/pixal3d_" : "/";
     trellis::CameraParams cam;
     if (pix) {
         constexpr float PIXAL3D_DEFAULT_FOV = 0.8575560450553894f;   // radians (~49.13 deg)
@@ -196,7 +201,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         const bool want_naf = (proj_ch == 2048) && cfg.naf;
         trellis::ProjCond pc;
         if (want_naf) {
-            trellis::Model nm = trellis::Model::load(M + "/naf.gguf", gpu);
+            trellis::Model nm = trellis::Model::load(M + FP + "naf.gguf", gpu);
             pc = trellis::pixal3d_proj_cond(dn, S, grid_res, proj_ch, cam, cds, &nm, &gd, naf_out);
             nm.free();
         } else {
@@ -210,7 +215,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
     printf("[3/6] sparse-structure flow + decode\n");
     vector<std::array<int,3>> coords;
     {
-        trellis::Model m = trellis::Model::load(M + "/ss_flow.gguf", gpu);
+        trellis::Model m = trellis::Model::load(M + FP + "ss_flow.gguf", gpu);
         trellis::DiTParams p; p.in_ch = 8; p.out_ch = 8; p.d_cond = 1024; p.cast_f32 = F32;
         p.proj_ch = proj_ch_of(m); p.proj_mode = p.proj_ch > 0;
         // The sparse-structure DiT is dense at 16^3, and Pixal3D's SS stage projects a 16^3 grid,
@@ -239,7 +244,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
     // Pixal3D publishes a single (1024) texture flow, where TRELLIS.2 publishes both. The light
     // --res 512 path has no texture model to run at all, so it degrades to geometry only.
     if (do_tex && pix && !cascade) {
-        FILE* tf = fopen((M + "/tex_flow_512.gguf").c_str(), "rb");
+        FILE* tf = fopen((M + FP + "tex_flow_512.gguf").c_str(), "rb");
         if (tf) fclose(tf);
         else { printf("      (pixal3d ships no res-512 texture flow -- writing geometry only)\n"); do_tex = false; }
     }
@@ -289,7 +294,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         const int max_tok   = cfg.max_tokens;
         printf("[4/7] shape SLAT flow (LR 512 -> upsample -> HR %d cascade, max_tok=%d)\n", hr_target, max_tok);
         // (1) LR shape flow @res32 with cond_512
-        lr_norm = shape_flow(M + "/shape_flow_512.gguf", coords, cond.data(), neg.data(), Lc,
+        lr_norm = shape_flow(M + FP + "shape_flow_512.gguf", coords, cond.data(), neg.data(), Lc,
                              /*grid_res=*/32, /*S=*/512, /*naf_out=*/512);
         lr_dn.resize(lr_norm.size());
         for (size_t n = 0; n < coords.size(); ++n) for (int c = 0; c < 32; ++c)
@@ -322,13 +327,13 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         // (4) HR shape flow @res(hr_res//16) with cond_1024. The projection grid follows the same
         //     backoff as the token grid — Pixal3D overrides its cond model's grid_resolution to
         //     hr_res//16 for exactly this reason — while the NAF target stays at the stage's 512.
-        slat_norm = shape_flow(M + "/shape_flow_1024.gguf", shc, cond1024.data(), neg1024.data(), Lc1024,
+        slat_norm = shape_flow(M + FP + "shape_flow_1024.gguf", shc, cond1024.data(), neg1024.data(), Lc1024,
                                /*grid_res=*/hr_res / 16, /*S=*/1024, /*naf_out=*/512);
         RES = hr_res; cond_dec = cond1024.data(); neg_dec = neg1024.data(); Lc_dec = Lc1024;
     } else {
         printf("[4/7] shape SLAT flow (512)\n");
         shc = coords;
-        slat_norm = shape_flow(M + "/shape_flow_512.gguf", coords, cond.data(), neg.data(), Lc,
+        slat_norm = shape_flow(M + FP + "shape_flow_512.gguf", coords, cond.data(), neg.data(), Lc,
                                /*grid_res=*/32, /*S=*/512, /*naf_out=*/512);
     }
     const int N = (int)shc.size();
@@ -395,7 +400,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         }
         // tex flow + decode inputs: HR path (shc/slat_norm/cond_dec/so.subs) vs res-512 mixed path
         // (coords/lr_norm/cond_512/so_tex.subs). The tex decoder upsamples via the guide subdivision.
-        const std::string tflow = M + (mixed ? "/tex_flow_512.gguf" : (cascade ? "/tex_flow_1024.gguf" : "/tex_flow_512.gguf"));
+        const std::string tflow = M + FP + (mixed ? "tex_flow_512.gguf" : (cascade ? "tex_flow_1024.gguf" : "tex_flow_512.gguf"));
         const vector<std::array<int,3>>& tcoords = mixed ? coords : shc;
         const vector<float>& tslat = mixed ? lr_norm : slat_norm;
         const float* tcond = mixed ? cond.data() : cond_dec;

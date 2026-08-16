@@ -54,10 +54,10 @@ Taken from Pixal3D's stage configs (`configs/gen/*_proj_finetune*.json`):
 
 | stage | GGUF | grid | DINOv3 image | NAF target | proj ch |
 |---|---|---|---|---|---|
-| sparse structure | `ss_flow.gguf` | 16³ (dense, = the DiT's own token grid) | 512 | — | 1024 |
-| shape LR | `shape_flow_512.gguf` | 32³ (active voxels) | 512 | 512 | 2048 |
-| shape HR | `shape_flow_1024.gguf` | `hr_res/16` | 1024 | 512 | 2048 |
-| texture | `tex_flow_1024.gguf` | `hr_res/16` | 1024 | 1024 | 2048 |
+| sparse structure | `pixal3d_ss_flow.gguf` | 16³ (dense, = the DiT's own token grid) | 512 | — | 1024 |
+| shape LR | `pixal3d_shape_flow_512.gguf` | 32³ (active voxels) | 512 | 512 | 2048 |
+| shape HR | `pixal3d_shape_flow_1024.gguf` | `hr_res/16` | 1024 | 512 | 2048 |
+| texture | `pixal3d_tex_flow_1024.gguf` | `hr_res/16` | 1024 | 1024 | 2048 |
 
 The HR grid follows the cascade's token-budget backoff (`--max-tokens`): when the
 `1536` target steps down, the projection grid steps with it, exactly as the reference
@@ -148,20 +148,24 @@ above is an identity, not an approximation, for every stage here (it needs
 
 ## Models
 
-Pixal3D's checkpoints carry the **same filenames** as TRELLIS.2's, so keep the two
-GGUF directories separate and point `--models` at the right one.
+**One model directory serves both families.** Pixal3D's checkpoints carry the same
+upstream filenames as TRELLIS.2's, so the family-specific ones are written with a
+`pixal3d_` prefix. Everything that is byte-identical between the two keeps its plain
+name and is shared — adding Pixal3D to a working TRELLIS.2 set is **5 new files**, not
+a second copy of everything.
 
-| role | source | notes |
-|------|--------|-------|
-| SS flow DiT | `TencentARC/Pixal3D` `ss_flow_img_dit_1_3B_64` | proj-conditioned |
-| Shape SLAT flow | `…/slat_flow_img2shape_dit_1_3B_{512,1024}` | proj, `proj_in_channels` 2048 |
-| Tex SLAT flow | `…/slat_flow_imgshape2tex_dit_1_3B_1024` | proj; **no res-512 variant exists** |
-| Shape / Tex / SS decoders | `…/{shape,tex}_dec_next_dc_f16c32`, `ss_dec_conv3d_16l8` | unchanged from TRELLIS.2 — reuse the GGUFs you already converted |
-| Image cond | DINOv3 ViT-L/16 | unchanged |
-| Feature upsampler | `valeoai/NAF` `naf_release.pth` | `naf.gguf`, ~few MB |
-| BG removal | BiRefNet | unchanged |
+| file | source | shared? |
+|------|--------|---------|
+| `pixal3d_ss_flow.gguf` | `TencentARC/Pixal3D` `ss_flow_img_dit_1_3B_64` | no — proj-conditioned |
+| `pixal3d_shape_flow_512.gguf` | `…/slat_flow_img2shape_dit_1_3B_512` | no — `proj_in_channels` 2048 |
+| `pixal3d_shape_flow_1024.gguf` | `…/slat_flow_img2shape_dit_1_3B_1024` | no |
+| `pixal3d_tex_flow_1024.gguf` | `…/slat_flow_imgshape2tex_dit_1_3B_1024` | no; **no res-512 variant exists** |
+| `pixal3d_naf.gguf` | `valeoai/NAF` `naf_release.pth` | no — Pixal3D only, a few MB |
+| `shape_dec.gguf`, `tex_dec.gguf`, `ss_dec.gguf` | `…/{shape,tex}_dec_next_dc_f16c32`, `ss_dec_conv3d_16l8` | **yes** — unchanged from TRELLIS.2 |
+| `dinov3.gguf` | DINOv3 ViT-L/16 | **yes** |
+| `birefnet.gguf` | BiRefNet | **yes** |
 
-Convert with the same tool:
+Convert with the same tool; the prefix is applied automatically:
 
 ```bash
 TRELLIS_FAMILY=pixal3d python tools/convert.py             # everything
@@ -179,17 +183,27 @@ Because Pixal3D publishes only the 1024 texture flow:
   cascade resolution.
 
 Third-party GGUF conversions of Pixal3D exist on the Hub (search `Pixal3D gguf`) but
-were produced for the PyTorch pipeline. They will load here only if they keep the torch
-`state_dict` names; check for `blocks.0.cross_attn.proj_linear.weight` before assuming
-they do.
+were produced for the PyTorch pipeline. They load here only if they keep the torch
+`state_dict` names — `tools/gguf_probe.py` answers that from ~4 MB of HTTP Range,
+without downloading the weights:
+
+```bash
+tools/gguf_probe.py https://huggingface.co/USER/REPO/resolve/main/some_flow.gguf
+```
+
+It reports the tensor names, the per-block structure (a SLat flow is 30 × 23 + 10 =
+700 tensors), `proj_in_channels`, and the dtypes trellis.cpp is picky about — the 1-D
+parameters must be F32, because `dit.cpp` adds `modulation` to an f32 timestep
+embedding and multiplies `norm2.weight` into an f32 activation. BF16 matmul weights
+are fine, but note `--f32` only casts F16 and so will not affect them.
 
 ---
 
 ## Usage
 
 ```bash
-# Pixal3D, default cascade
-trellis-cli in.png out.glb --model pixal3d --models /models/pixal3d-gguf
+# Pixal3D, default cascade — same model directory as TRELLIS.2
+trellis-cli in.png out.glb --model pixal3d --models /models
 
 # with a measured FOV, and BiRefNet matting
 trellis-cli in.png out.glb --model pixal3d --fov 38 --bg-removal birefnet

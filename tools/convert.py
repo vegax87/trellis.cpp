@@ -25,8 +25,10 @@ Pixal3D notes:
     Both are handled by the verbatim name policy, so no remapping is needed —
     trellis.cpp keys off proj_linear's presence and reads proj_in_channels
     straight off its shape.
-  * The decoders (ss_dec, shape_dec, tex_dec) are the unchanged TRELLIS.2 ones,
-    so a Pixal3D model directory can reuse decoder GGUFs already converted.
+  * The decoders (ss_dec, shape_dec, tex_dec), DINOv3 and BiRefNet are the
+    unchanged TRELLIS.2 ones and keep their plain names; the flows and NAF are
+    written as `pixal3d_*.gguf`. Both families therefore share ONE model
+    directory, and adding Pixal3D to an existing set is 5 new files.
   * NAF is fetched by torch.hub as a .pth rather than safetensors; convert it
     with the `naf` component, which reads the state dict through torch.
 """
@@ -190,10 +192,21 @@ def convert_naf(w, src):
     return n_f16, n_f32, total
 
 
+# Components that are byte-identical between the two families and therefore keep their plain
+# name, so one model directory can serve both. Everything else gets a `pixal3d_` prefix.
+SHARED = {"shape_dec", "tex_dec", "ss_dec", "dinov3", "birefnet"}
+
+
+def out_name(component):
+    if FAMILY == "pixal3d" and component not in SHARED:
+        return f"pixal3d_{component}.gguf"
+    return f"{component}.gguf"
+
+
 def convert(component):
     src, cfg, arch = MANIFEST[component]
     os.makedirs(OUT, exist_ok=True)
-    dst = f"{OUT}/{component}.gguf"
+    dst = f"{OUT}/{out_name(component)}"
     w = gguf.GGUFWriter(dst, arch)
     if cfg and os.path.exists(cfg):
         with open(cfg) as f:

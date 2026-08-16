@@ -129,8 +129,13 @@ patch tokens with **pixel-aligned projection conditioning**: each DiT token is a
 projected into the image and sampled there. The samplers, decoders, remesh and bake are
 shared, so the integration is a conditioning module plus one branch inside the DiT block.
 The shape/texture stages also run the NAF guided feature upsampler, ported in
-`src/naf.cpp`. See **[docs/pixal3d/README.md](docs/pixal3d/README.md)** for the model set,
-the `--fov` camera flag (MoGe-2 estimation is not ported) and the known gaps.
+`src/naf.cpp`.
+
+Both families use the **same model directory**: the Pixal3D flows and NAF are named
+`pixal3d_*.gguf`, while the decoders, DINOv3 and BiRefNet are byte-identical and shared,
+so adding Pixal3D to a working TRELLIS.2 set is 5 new files. See
+**[docs/pixal3d/README.md](docs/pixal3d/README.md)** for the model list, the `--fov`
+camera flag (MoGe-2 estimation is not ported) and the known gaps.
 
 The postprocess matches the reference pipeline op for op (see
 `docs/spec/27-reference-postprocess.md` / `28-divergence-matrix.md`): the raw
