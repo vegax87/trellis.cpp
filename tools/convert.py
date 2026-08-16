@@ -6,6 +6,11 @@ Run with the project's uv venv:
 
     TRELLIS_FAMILY=pixal3d tools/convert.py            # Pixal3D flows + NAF
 
+Paths come from the environment, so nothing here needs editing per machine:
+    TRELLIS_MODELS    TRELLIS.2 checkpoint tree
+    PIXAL3D_MODELS    Pixal3D checkpoint tree (and naf/naf_release.pth)
+    TRELLIS_GGUF_OUT  where the .gguf files are written
+
 Design:
   * safetensors is parsed by hand (the numpy backend can't read bf16), so we
     control the bf16 -> f32 -> f16 path exactly (bf16 = high 16 bits of f32).
@@ -37,9 +42,13 @@ import numpy as np
 import gguf
 
 FAMILY = os.environ.get("TRELLIS_FAMILY", "trellis")
-MODELS = "/media/ilintar/D_SSD/models/trellis2"
-PIXAL3D = "/media/ilintar/D_SSD/models/pixal3d"
-OUT = f"{MODELS}/gguf" if FAMILY == "trellis" else f"{PIXAL3D}/gguf"
+# Source trees and output directory. The defaults are the author's layout; override them from
+# the environment rather than editing this file (the checkpoints live outside the repo, so
+# every machine — and every Windows contributor — needs different paths).
+MODELS = os.environ.get("TRELLIS_MODELS", "/media/ilintar/D_SSD/models/trellis2")
+PIXAL3D = os.environ.get("PIXAL3D_MODELS", "/media/ilintar/D_SSD/models/pixal3d")
+OUT = os.environ.get("TRELLIS_GGUF_OUT",
+                     f"{MODELS}/gguf" if FAMILY == "trellis" else f"{PIXAL3D}/gguf")
 
 # component -> (safetensors path, config json path or None, gguf arch tag)
 MANIFEST = {
