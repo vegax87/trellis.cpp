@@ -169,6 +169,45 @@ def main(argv):
             bad += 1
         print(f"    {ty(t):>5}  {name:<52} ne={ne}{note}")
 
+    # Structural completeness. A DiT is 30 identical blocks plus a fixed preamble, so every
+    # block must carry the same set of suffixes. A converter that renamed, merged or dropped
+    # tensors shows up here as a ragged block rather than as a crash at inference time.
+    blocks = {}
+    top = []
+    for n, ne, t in tensors:
+        if n.startswith("blocks."):
+            i, _, suffix = n[len("blocks."):].partition(".")
+            if i.isdigit():
+                blocks.setdefault(int(i), set()).add(suffix)
+                continue
+        top.append(n)
+    if blocks:
+        nb = max(blocks) + 1
+        ref = blocks.get(0, set())
+        ragged = [i for i in range(nb) if blocks.get(i) != ref]
+        print(f"\n  structure: {nb} blocks x {len(ref)} tensors + {len(top)} top-level "
+              f"= {nb * len(ref) + len(top)} (file has {n_tensors})")
+        if len(blocks) != nb or ragged:
+            print(f"    RAGGED: block indices missing or inconsistent: {ragged[:8]}")
+            bad += 1
+        if nb * len(ref) + len(top) != n_tensors:
+            print("    COUNT MISMATCH: some blocks share suffixes unevenly")
+            bad += 1
+
+    # BF16 matmul weights load and run (ggml has a dedicated cuBLAS BF16 path and CPU type
+    # traits), but --f32 only casts F16, so that escape hatch does not apply to them.
+    mm = [t for n, ne, t in tensors if len(ne) >= 2 and "rms_norm" not in n]
+    hist = {}
+    for t in mm:
+        hist[ty(t)] = hist.get(ty(t), 0) + 1
+    if hist:
+        print(f"  matmul weights: " + ", ".join(f"{k}={v}" for k, v in sorted(hist.items())))
+    if "BF16" in hist:
+        print("    note: BF16 runs, but --f32 only casts F16 — it will not affect these")
+    quant = [k for k in hist if k.startswith("Q")]
+    if quant:
+        print(f"    note: k-quants/{'/'.join(quant)} are untested in trellis.cpp's graphs")
+
     proj = by_name.get("blocks.0.cross_attn.proj_linear.weight")
     print()
     if proj:
