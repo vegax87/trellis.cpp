@@ -28,6 +28,18 @@ std::vector<float> normalize_cutout(const std::vector<unsigned char>& rgb, int s
     return out;
 }
 
+std::vector<float> cutout_to_chw01(const std::vector<unsigned char>& rgb, int sz, int S) {
+    const size_t pixels = (size_t)sz * sz;
+    const int channels = rgb.size() == pixels * 4 ? 4 : 3;
+    if (sz <= 0 || S <= 0 || rgb.size() != pixels * channels) return {};
+    std::vector<unsigned char> rs((size_t)S*S*channels);
+    stbir_resize_uint8(rgb.data(), sz, sz, 0, rs.data(), S, S, 0, channels);
+    std::vector<float> out((size_t)3*S*S);
+    for (int c = 0; c < 3; ++c) for (int y = 0; y < S; ++y) for (int x = 0; x < S; ++x)
+        out[((size_t)c*S + y)*S + x] = rs[((size_t)y*S + x)*channels + c] / 255.0f;
+    return out;
+}
+
 // alpha [W*H] (>0.8 = foreground) -> bbox crop (10% margin) + premultiplied square RGBA uint8.
 static std::vector<unsigned char> alpha_to_cutout(const unsigned char* rgba, int W, int H,
                                                   const std::vector<float>& alpha, int& sz) {

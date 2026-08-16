@@ -23,4 +23,9 @@ bool image_has_alpha(const std::string& path);
 std::vector<unsigned char> birefnet_cutout(const std::string& path, const Model& bm, int gpu, int& sz);
 // Resize a square RGB/RGBA-uint8 cutout to SxS, ImageNet-normalize -> [3,S,S] torch CHW.
 std::vector<float> normalize_cutout(const std::vector<unsigned char>& rgb, int sz, int S);
+
+// Resize a square RGB-uint8 cutout to SxS and scale to [0,1] WITHOUT ImageNet normalization
+// -> [3,S,S] torch CHW. The NAF guide branch (Pixal3D) consumes the raw [0,1] image, not the
+// normalized one that feeds DINOv3.
+std::vector<float> cutout_to_chw01(const std::vector<unsigned char>& rgb, int sz, int S);
 } // namespace trellis
