@@ -344,6 +344,14 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         // (4) HR shape flow @res(hr_res//16) with cond_1024. The projection grid follows the same
         //     backoff as the token grid — Pixal3D overrides its cond model's grid_resolution to
         //     hr_res//16 for exactly this reason — while the NAF target stays at the stage's 512.
+        // The HR stage is the only one conditioned on DINOv3 at 1024. If its feature map were read
+        // with a different spatial layout than the 512 one — which the LR stage uses successfully —
+        // nothing else in the pipeline would show it: the features would still be well-scaled,
+        // well-correlated across the proj halves, and finite.
+        if (pix)
+            printf("      [stats] proj: DINOv3@1024 vs @512 agreement on the same points = %.3f\n",
+                   trellis::pixal3d_cross_res_agreement(dino1024, 1024, dino, 512,
+                                                        hr_res / 16, cam, shc));
         slat_norm = shape_flow(M + FP + "shape_flow_1024.gguf", shc, cond1024.data(), neg1024.data(), Lc1024,
                                /*grid_res=*/hr_res / 16, /*S=*/1024, /*naf_out=*/512);
         RES = hr_res; cond_dec = cond1024.data(); neg_dec = neg1024.data(); Lc_dec = Lc1024;

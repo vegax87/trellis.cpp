@@ -75,6 +75,32 @@ static void sample_bilinear(const float* map, int Hf, int Wf, int C, int S,
         dst[j] = w00 * p00[j] + w10 * p10[j] + w01 * p01[j] + w11 * p11[j];
 }
 
+double pixal3d_cross_res_agreement(const std::vector<float>& dino_a, int Sa,
+                                   const std::vector<float>& dino_b, int Sb,
+                                   int grid_res, const CameraParams& cam,
+                                   const std::vector<std::array<int, 3>>& coords) {
+    if (coords.empty()) return 0.0;
+    const int Ha = Sa / PATCH, Hb = Sb / PATCH;
+    const float* pa = dino_a.data() + (size_t)D_DINO * N_GLOBAL;
+    const float* pb = dino_b.data() + (size_t)D_DINO * N_GLOBAL;
+    std::vector<float> va(D_DINO), vb(D_DINO);
+    double acc = 0;
+    // Every 37th point: the figure is a mean over thousands of samples either way, and the full
+    // sweep would cost more than the flow step it is diagnosing.
+    size_t n = 0;
+    for (size_t t = 0; t < coords.size(); t += 37, ++n) {
+        float xa, ya, xb, yb;
+        pixal3d_project_cell(grid_res, coords[t][0], coords[t][1], coords[t][2], cam, Sa, xa, ya);
+        pixal3d_project_cell(grid_res, coords[t][0], coords[t][1], coords[t][2], cam, Sb, xb, yb);
+        sample_bilinear(pa, Ha, Ha, D_DINO, Sa, xa, ya, va.data());
+        sample_bilinear(pb, Hb, Hb, D_DINO, Sb, xb, yb, vb.data());
+        double d = 0, na = 0, nb = 0;
+        for (int c = 0; c < D_DINO; ++c) { d += (double)va[c]*vb[c]; na += (double)va[c]*va[c]; nb += (double)vb[c]*vb[c]; }
+        if (na > 0 && nb > 0) acc += d / std::sqrt(na * nb);
+    }
+    return n ? acc / (double)n : 0.0;
+}
+
 // The projection conditioning has no runtime failure mode: a wrong camera, a wrong grid or a
 // broken upsampler all produce finite numbers and a plausible-looking mesh silhouette, with the
 // damage showing up only as high-frequency noise in the generated surface. These three figures

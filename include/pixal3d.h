@@ -57,6 +57,16 @@ struct ProjCond {
 //               is a degraded input, not an equivalent one.
 //   img01     : raw [0,1] guide image, [3,S,S] torch CHW — required when `naf` is given.
 //   naf_out   : NAF target resolution for this stage.
+// Sample the same 3-D points from two DINOv3 feature maps produced at different input sizes and
+// report the mean cosine similarity. Both maps encode the same image, so a point's features must
+// agree strongly across them; the value only collapses if one map is being read with the wrong
+// spatial layout. This isolates "the conditioning is wrong at 1024 but right at 512", which no
+// other statistic in the pipeline can distinguish from a bad latent.
+double pixal3d_cross_res_agreement(const std::vector<float>& dino_a, int Sa,
+                                   const std::vector<float>& dino_b, int Sb,
+                                   int grid_res, const CameraParams& cam,
+                                   const std::vector<std::array<int, 3>>& coords);
+
 ProjCond pixal3d_proj_cond(const std::vector<float>& dino, int S, int grid_res, int proj_ch,
                            const CameraParams& cam,
                            const std::vector<std::array<int, 3>>* coords,
