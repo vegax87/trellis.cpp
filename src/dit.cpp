@@ -19,8 +19,22 @@ static bool g_cast_f32 = false;   // set per build_dit_dense call
 static constexpr int64_t kAttnChunkBytes = 1024ll * 1024 * 1024;
 bool g_no_fa = false;             // --no-fa; set by trellis_run
 
+static std::string ne_str(const T* t) {
+    std::string s = "[";
+    for (int i = 0; i < 4 && t->ne[i] > 1; ++i) s += (i ? ", " : "") + std::to_string(t->ne[i]);
+    return s + "]";
+}
+
 static T* lin(ggml_context* c, const Model& m, const std::string& p, T* x) {
     T* w = m.get(p + ".weight");
+    // A GGUF whose layout does not match what this graph assumes reaches ggml as a bare
+    // GGML_ASSERT(ggml_can_mul_mat) and a core dump, naming neither the tensor nor the shapes.
+    // Since third-party conversions are a normal way to obtain these weights, say what broke.
+    if (w->ne[0] != x->ne[0])
+        throw std::runtime_error("dit: " + p + ".weight expects an input width of " +
+                                 std::to_string(w->ne[0]) + " but the activation is " +
+                                 std::to_string(x->ne[0]) + " wide (weight ne=" + ne_str(w) +
+                                 ", input ne=" + ne_str(x) + ")");
     if (g_cast_f32 && w->type == GGML_TYPE_F16) w = ggml_cast(c, w, GGML_TYPE_F32);
     T* y = ggml_mul_mat(c, w, x);
     if (T* b = m.try_get(p + ".bias")) y = ggml_add(c, y, b);
