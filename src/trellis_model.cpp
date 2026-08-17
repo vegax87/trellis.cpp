@@ -120,6 +120,60 @@ static ggml_backend* make_backend(int gpu) {
     return cpu_backend();
 }
 
+// Conversions aimed at other runtimes store tensors in a quantization-friendly 2-D layout
+// rather than their natural shape — a 1536-element RMS-norm gamma becomes [256, 6] instead of
+// [128, 12], an [8, 1536] input projection becomes [256, 48] — and record the real shape in a
+// metadata key ending `.orig_shape.<tensor name>` (ComfyUI-GGUF and its derivatives do this).
+// The element order is untouched, so restoring the shape is a pure reinterpretation of the same
+// bytes. Without it the layout looks plausible everywhere and only fails when a matmul finally
+// compares widths, deep inside the graph.
+//
+// Only non-quantized types are restored: a quantized tensor's row length must stay a multiple
+// of its block size, which reshaping would break.
+static int restore_orig_shapes(gguf_context* gguf, ggml_context* meta) {
+    static const char* MARK = ".orig_shape.";
+    int fixed = 0;
+    for (int64_t k = 0, nk = gguf_get_n_kv(gguf); k < nk; ++k) {
+        const std::string key = gguf_get_key(gguf, k);
+        const size_t p = key.find(MARK);
+        if (p == std::string::npos) continue;
+        if (gguf_get_kv_type(gguf, k) != GGUF_TYPE_ARRAY) continue;
+
+        ggml_tensor* t = ggml_get_tensor(meta, key.substr(p + strlen(MARK)).c_str());
+        if (!t || ggml_blck_size(t->type) != 1) continue;
+
+        const size_t nd = gguf_get_arr_n(gguf, k);
+        if (nd < 1 || nd > GGML_MAX_DIMS) continue;
+        const void* raw = gguf_get_arr_data(gguf, k);
+        const gguf_type at = gguf_get_arr_type(gguf, k);
+
+        // The recorded shape is in torch order (outermost dimension first); ggml's ne is the
+        // reverse, so read it back to front.
+        int64_t ne[GGML_MAX_DIMS] = { 1, 1, 1, 1 };
+        int64_t elems = 1;
+        for (size_t d = 0; d < nd; ++d) {
+            int64_t v;
+            switch (at) {
+                case GGUF_TYPE_INT32:  v = ((const int32_t*)  raw)[d]; break;
+                case GGUF_TYPE_UINT32: v = ((const uint32_t*) raw)[d]; break;
+                case GGUF_TYPE_INT64:  v = ((const int64_t*)  raw)[d]; break;
+                case GGUF_TYPE_UINT64: v = (int64_t)((const uint64_t*) raw)[d]; break;
+                default: v = -1;
+            }
+            if (v <= 0) { elems = -1; break; }
+            ne[nd - 1 - d] = v;
+            elems *= v;
+        }
+        if (elems != ggml_nelements(t)) continue;   // padded, not merely reshaped — leave it
+
+        for (int d = 0; d < GGML_MAX_DIMS; ++d) t->ne[d] = ne[d];
+        t->nb[0] = ggml_type_size(t->type);
+        for (int d = 1; d < GGML_MAX_DIMS; ++d) t->nb[d] = t->nb[d - 1] * t->ne[d - 1];
+        ++fixed;
+    }
+    return fixed;
+}
+
 Model Model::load(const std::string& path, int gpu) {
     Model m;
 
@@ -136,6 +190,10 @@ Model Model::load(const std::string& path, int gpu) {
         m.arch = gguf_get_val_str(m.gguf, k);
     if (int64_t k = gguf_find_key(m.gguf, "trellis.config_json"); k >= 0)
         m.config_json = gguf_get_val_str(m.gguf, k);
+
+    if (int fixed = restore_orig_shapes(m.gguf, meta))
+        fprintf(stderr, "[trellis] %s: restored %d reshaped tensor(s) from orig_shape metadata\n",
+                path.c_str(), fixed);
 
     m.backend = make_backend(gpu);
     m.on_gpu  = gpu >= 0;

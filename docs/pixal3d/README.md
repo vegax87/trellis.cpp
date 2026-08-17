@@ -203,20 +203,28 @@ Because Pixal3D publishes only the 1024 texture flow:
   suppresses the dense-decode speckle) is disabled; Pixal3D always textures at the
   cascade resolution.
 
-Third-party GGUF conversions of Pixal3D exist on the Hub (search `Pixal3D gguf`) but
-were produced for the PyTorch pipeline. They load here only if they keep the torch
-`state_dict` names — `tools/gguf_probe.py` answers that from ~4 MB of HTTP Range,
-without downloading the weights:
+Third-party GGUF conversions of Pixal3D exist on the Hub (search `Pixal3D gguf`). Most
+were produced for the PyTorch pipeline with ComfyUI-style tooling, which stores tensors
+in a quantization-friendly 2-D layout — a 1536-element RMS-norm gamma becomes `[256, 6]`
+rather than `[128, 12]` — and records the real shape in a `*.orig_shape.<tensor>`
+metadata key. The loader restores those shapes on load, so such files work; it logs
+`restored N reshaped tensor(s)` when it does. Element counts must match exactly, so a
+padded (rather than merely reshaped) tensor is left alone and will fail loudly.
+
+What still has to hold is the naming: the tensors must carry the verbatim torch
+`state_dict` names. `tools/gguf_probe.py` answers that from ~4 MB of HTTP Range, without
+downloading the weights:
 
 ```bash
 tools/gguf_probe.py https://huggingface.co/USER/REPO/resolve/main/some_flow.gguf
 ```
 
 It reports the tensor names, the per-block structure (a SLat flow is 30 × 23 + 10 =
-700 tensors), `proj_in_channels`, and the dtypes trellis.cpp is picky about — the 1-D
-parameters must be F32, because `dit.cpp` adds `modulation` to an f32 timestep
-embedding and multiplies `norm2.weight` into an f32 activation. BF16 matmul weights
-are fine, but note `--f32` only casts F16 and so will not affect them.
+700 tensors), `proj_in_channels`, any foreign-runtime metadata, and the dtypes
+trellis.cpp is picky about — the 1-D parameters must be F32, because `dit.cpp` adds
+`modulation` to an f32 timestep embedding and multiplies `norm2.weight` into an f32
+activation. BF16 matmul weights are fine, but note `--f32` only casts F16 and so will
+not affect them.
 
 ---
 
