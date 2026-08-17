@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <stdexcept>
 
 namespace trellis {
@@ -74,6 +75,55 @@ static void sample_bilinear(const float* map, int Hf, int Wf, int C, int S,
         dst[j] = w00 * p00[j] + w10 * p10[j] + w01 * p01[j] + w11 * p11[j];
 }
 
+// The projection conditioning has no runtime failure mode: a wrong camera, a wrong grid or a
+// broken upsampler all produce finite numbers and a plausible-looking mesh silhouette, with the
+// damage showing up only as high-frequency noise in the generated surface. These three figures
+// separate those causes.
+//   - coverage: how many grid cells land inside the frame. The cube's corners legitimately fall
+//     outside (the object is inscribed in it), but a badly wrong camera collapses this.
+//   - the two halves of a 2048-channel vector: the low-resolution DINOv3 samples and the
+//     NAF-upsampled ones describe the SAME points at different detail, so they must share a
+//     scale and correlate strongly. A broken upsampler shows up here and nowhere else.
+static void proj_stats(const ProjCond& pc, size_t N, const std::vector<float>& pts, int S) {
+    if (N == 0) return;
+    size_t inside = 0;
+    for (size_t t = 0; t < N; ++t)
+        if (pts[2*t] >= 0 && pts[2*t] < S && pts[2*t+1] >= 0 && pts[2*t+1] < S) ++inside;
+
+    auto half = [&](int off, double& mean, double& sd) {
+        double s = 0, s2 = 0;
+        for (size_t t = 0; t < N; ++t)
+            for (int c = 0; c < D_DINO; ++c) {
+                const double v = pc.proj[(size_t)pc.proj_ch * t + off + c];
+                s += v; s2 += v * v;
+            }
+        const double n = (double)N * D_DINO;
+        mean = s / n; sd = std::sqrt(std::max(0.0, s2 / n - mean * mean));
+    };
+    double lm, ls;
+    half(0, lm, ls);
+    printf("      [stats] proj: %.0f%% of cells inside frame; lr mean=%.3f std=%.3f",
+           100.0 * (double)inside / (double)N, lm, ls);
+    if (pc.proj_ch == 2 * D_DINO) {
+        double hm, hs;
+        half(D_DINO, hm, hs);
+        double dot = 0, nl = 0, nh = 0;
+        for (size_t t = 0; t < N; ++t) {
+            const float* p = &pc.proj[(size_t)pc.proj_ch * t];
+            double d = 0, a = 0, b = 0;
+            for (int c = 0; c < D_DINO; ++c) {
+                d += (double)p[c] * p[D_DINO + c];
+                a += (double)p[c] * p[c];
+                b += (double)p[D_DINO + c] * p[D_DINO + c];
+            }
+            dot += d; nl += a; nh += b;
+        }
+        const double cs = (nl > 0 && nh > 0) ? dot / std::sqrt(nl * nh) : 0.0;
+        printf("; hr mean=%.3f std=%.3f; cos(lr,hr)=%.3f", hm, hs, cs);
+    }
+    printf("\n");
+}
+
 ProjCond pixal3d_proj_cond(const std::vector<float>& dino, int S, int grid_res, int proj_ch,
                            const CameraParams& cam,
                            const std::vector<std::array<int, 3>>* coords,
@@ -131,6 +181,7 @@ ProjCond pixal3d_proj_cond(const std::vector<float>& dino, int S, int grid_res, 
         }
     }
 
+    proj_stats(out, N, pts, S);
     return out;
 }
 
