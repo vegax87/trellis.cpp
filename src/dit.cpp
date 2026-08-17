@@ -131,7 +131,14 @@ static T* sdpa(ggml_context* c, T* q, T* k, T* v, int d_model, T* mask = nullptr
     // reads only -0.0019 vs -0.00014 (its oracle is -0.00010). MMA already accumulated KQ in
     // FP32, so only the VKQ sum stagnated there -- same bug, ~9x milder.
     // --no-fa falls back to the exact chunked path (correct on any backend, ~2.7x slower).
-    const bool no_fa = g_no_fa;
+    // FlashAttention exists here to avoid materialising the [Lk, Lq, nh] score matrix, which is
+    // terabytes at the HR flow. When Lk is shorter than one FA key tile that matrix is trivially
+    // small and FA buys nothing — while costing a great deal of risk. Pixal3D's proj mode
+    // cross-attends over 5 global tokens, so the key dim gets zero-padded 5 -> 256: 98% padding,
+    // a regime TRELLIS.2 (1029 or 4101 keys) never reaches, and precisely the shape whose mask
+    // handling the comments below record as fragile and token-count dependent. Take the exact
+    // path instead; at Lk = 5 it is cheaper than FA anyway.
+    const bool no_fa = g_no_fa || k->ne[2] < 256;
     if (!no_fa) {
         // TRELLIS_FA_FAST=1: F16 K/V + default (F16) accumulation — the shapes
         // the Vulkan coopmat FA shaders are specialized for. A/B only: F16 K/V
