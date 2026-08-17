@@ -304,16 +304,33 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         vector<std::array<int,3>> hr_coords;
         { trellis::Model m = trellis::Model::load(M + "/shape_dec.gguf", gpu);
           hr_coords = trellis::shape_upsample(m, lr_dn, coords); m.free(); }
-        // (3) quantize res512 -> res(hr_res//16) with the reference's adaptive token-budget backoff
-        //     (sample_shape_slat_cascade): start at hr_target, step -128 toward the 1024 floor while
-        //     the unique token count would exceed max_num_tokens. grid = hr_res//16 is integral since
-        //     128/16 = 8 (1536->96, 1408->88, ..., 1024->64).
+        // (3) quantize res512 -> res(hr_res//16) with the reference's adaptive token-budget backoff:
+        //     start at hr_target, step -128 toward the 1024 floor while the unique token count
+        //     would exceed max_num_tokens. grid = hr_res//16 is integral since 128/16 = 8
+        //     (1536->96, 1408->88, ..., 1024->64).
+        //
+        //     The two families quantize DIFFERENTLY, and it matters far more than it looks.
+        //     TRELLIS.2 floors `u * grid` — a cell quantizer, and the coords only feed RoPE, where
+        //     a half-cell offset is a smooth reparameterization. Pixal3D rounds `u * (grid - 1)`,
+        //     because for it the token index ALSO selects which projection-grid node the token
+        //     samples the image at, and that grid is the endpoint-inclusive linspace(-1, 1, grid):
+        //     rounding to the nearest node is what keeps the pixel-aligned sample registered.
+        //     (Pixal3D's own sample_shape_slat_cascade still carries the TRELLIS.2 form, but run()
+        //     never calls it — that dead helper is what this port originally followed.)
+        //
+        //     Using the wrong one is not a smooth warp but a step function: at grid 64 it moves
+        //     25% of coordinates a full cell along each axis, in stripes of period 8, so 58% of
+        //     tokens are misregistered on at least one axis. A cell is 16 res-1024 voxels — one
+        //     ViT-L/16 patch at S=1024. The silhouette survives on the global tokens; the fine
+        //     detail does not, and the decode comes out speckled.
         int hr_res = hr_target;
         for (;;) {
             const int gi = hr_res / 16;          // integral grid (ref's hr_resolution//16)
-            const float g = (float)gi;
+            const float g = pix ? (float)(gi - 1) : (float)gi;
+            auto qz = [&](float c) { return pix ? (int)lrintf((c + 0.5f) / 512.f * g)
+                                               : (int)((c + 0.5f) / 512.f * g); };
             std::set<std::array<int,3>> q;
-            for (auto& c : hr_coords) q.insert({ (int)((c[0]+0.5f)/512.f*g), (int)((c[1]+0.5f)/512.f*g), (int)((c[2]+0.5f)/512.f*g) });
+            for (auto& c : hr_coords) q.insert({ qz((float)c[0]), qz((float)c[1]), qz((float)c[2]) });
             if ((int)q.size() < max_tok || hr_res <= 1024) {
                 shc.assign(q.begin(), q.end());
                 printf("      upsampled coords @res512=%d -> quantized @res%d (grid %d) = %d tokens\n",
