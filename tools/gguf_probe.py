@@ -104,11 +104,13 @@ def main(argv):
 
     # Value readers by gguf_metadata_value_type. Only the scalar payloads need real
     # decoding; everything else just has to be skipped by the right number of bytes.
-    fixed = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
+    fixed = {0: "<B", 1: "<b", 2: "<H", 3: "<h", 4: "<I", 5: "<i",
+             6: "<f", 7: "<?", 10: "<Q", 11: "<q", 12: "<d"}
 
     def value(t):
         if t in fixed:
-            return take(fixed[t])
+            fmt = fixed[t]
+            return struct.unpack(fmt, take(struct.calcsize(fmt)))[0]
         if t == 8:
             return string()
         if t == 9:
@@ -143,6 +145,20 @@ def main(argv):
     for _, _, t in tensors:
         counts[ty(t)] = counts.get(ty(t), 0) + 1
     print("  dtypes: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
+
+    # Converters aimed at other runtimes (ComfyUI-GGUF and friends) reshape tensors into a
+    # quantization-friendly 2-D form and stash the real shape in metadata. trellis.cpp reads
+    # shapes off the tensors themselves, so such a file cannot be loaded as-is -- say so here
+    # rather than letting the mismatch reach ggml as a bare assert.
+    extra = sorted(k for k in kv if not k.startswith("general."))
+    if extra:
+        print(f"  non-standard metadata: {len(extra)} key(s) — this file was written for a "
+              f"different runtime")
+        for k in extra[:4]:
+            v = kv[k]
+            print(f"    {k} = {v if isinstance(v, (str, list, int, float)) else '<binary>'}")
+        if len(extra) > 4:
+            print(f"    ... and {len(extra) - 4} more")
 
     by_name = {n: (ne, t) for n, ne, t in tensors}
 
