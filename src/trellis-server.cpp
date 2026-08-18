@@ -5,8 +5,10 @@
 //                      fields "seed", "resolution" (512/1024/1536), "bg_removal"
 //                      (threshold|birefnet), "uv" (xatlas = default, unique
 //                      chart space; box = faster projection), "band" (narrow-band
-//                      DC remesh band width, default 1 — see --band). Returns
-//                      model/gltf-binary.
+//                      DC remesh band width, default 1 — see --band), "model"
+//                      (trellis|pixal3d — one directory holds both), and for
+//                      pixal3d the camera: "fov" (degrees), "mesh_scale",
+//                      "extend_pixel". Returns model/gltf-binary.
 //
 // Launch-time defaults come from CLI flags (see trellis::parse_args);
 // each request copies those defaults and applies its own overrides. The model
@@ -99,6 +101,19 @@ int main(int argc, char** argv) {
         if (req.has_file("bg_removal")) p.birefnet = (req.get_file_value("bg_removal").content == "birefnet") ? 1 : 0;
         if (req.has_file("uv")) p.xatlas = (req.get_file_value("uv").content == "xatlas");
         if (req.has_file("band")) p.band = atoi(req.get_file_value("band").content.c_str());
+        // Both families share one model directory (the Pixal3D flows carry a pixal3d_ prefix),
+        // so a single resident server can serve either -- the client just has to say which.
+        if (req.has_file("model")) {
+            const std::string& m = req.get_file_value("model").content;
+            if      (m == "pixal3d") p.family = trellis::ModelFamily::Pixal3D;
+            else if (m == "trellis") p.family = trellis::ModelFamily::Trellis;
+            else { res.status = 400; res.set_content("model must be trellis or pixal3d\n", "text/plain"); return; }
+        }
+        // Camera, for pixal3d. Unlike every other knob these describe the IMAGE rather than the
+        // run, so a launch-time default is close to useless on a server taking arbitrary uploads.
+        if (req.has_file("fov"))          p.fov_deg      = (float) atof(req.get_file_value("fov").content.c_str());
+        if (req.has_file("mesh_scale"))   p.mesh_scale   = (float) atof(req.get_file_value("mesh_scale").content.c_str());
+        if (req.has_file("extend_pixel")) p.extend_pixel = atoi(req.get_file_value("extend_pixel").content.c_str());
         if (req.has_file("webp")) {
             const std::string& w = req.get_file_value("webp").content;
             p.webp = (w == "off" || w == "0" || w == "false") ? 0

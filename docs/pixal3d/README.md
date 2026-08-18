@@ -258,7 +258,17 @@ trellis-cli in.png out.glb --model pixal3d --fov 38 --bg-removal birefnet
 trellis-cli in.png out.glb --model pixal3d --no-naf
 ```
 
-`trellis-server` takes the same flags at launch.
+`trellis-server` takes the same flags at launch, and since one model directory holds both
+families a single resident server can serve either — `POST /generate` accepts a `model`
+field (`trellis` | `pixal3d`) alongside the existing ones. The camera is per-request too,
+which matters more than it sounds: `fov`, `mesh_scale` and `extend_pixel` describe the
+*image*, not the run, so a launch-time default is close to useless on a server taking
+arbitrary uploads.
+
+```bash
+curl -F image=@in.png -F model=pixal3d -F fov=38 -F resolution=1024 \
+     http://127.0.0.1:8080/generate -o out.glb
+```
 
 Every other flag — `--res`, `--max-tokens`, `--gss`/`--gsh`, `--band`, `--decim`,
 `--atlas`, `--box-uv`, `--tex-res`, `--seed` — behaves identically, because everything
