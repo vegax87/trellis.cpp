@@ -74,9 +74,18 @@ MoGe-2 is **not ported**. The closed-form distance is, so the FOV is the only fr
 parameter and it is a flag:
 
 ```
---fov DEG          horizontal field of view (default 49.13°, Pixal3D's own default)
---mesh-scale F     object scale inside the unit grid (default 1.0)
+--fov DEG           horizontal field of view (default 49.13°, Pixal3D's own default)
+--mesh-scale F      object scale inside the unit grid (default 1.0)
+--extend-pixel N    how far the subject continues past the image border (default 0)
 ```
+
+`--extend-pixel` matters more than it sounds. The solve registers the grid corner onto
+the image border, which silently assumes the subject is *fully inside the frame*. Feed it
+an image cropped at the edges — a generator asked for a close-up, say — and the object is
+squeezed into the grid: the visible part comes out compressed and the unseen part is
+invented at the wrong scale. Raising it moves the virtual border outward, and the camera
+steps back to match (49.13° at 512: 0 px → distance 1.094, 64 px → 0.875, 128 px → 0.729).
+Upstream has the same parameter but never exposes it, since MoGe-2 sees the whole frame.
 
 The projection is resolution-independent once normalized, so one camera solved at 512
 serves the 1024 stages too. `trellis-test-pixal3d` pins both functions to golden values

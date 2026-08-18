@@ -89,9 +89,9 @@ int trellis_run(const trellis::TrellisParams& cfg) {
                                              : PIXAL3D_DEFAULT_FOV;
         // The distance is derived at 512 on purpose: the projection is resolution-independent
         // once normalized, so one camera serves both the 512 and the 1024 stages.
-        cam = trellis::pixal3d_camera(fov, cfg.mesh_scale, 512, 0);
-        printf("[trellis] model family: pixal3d (fov %.2f deg, distance %.4f, mesh scale %.2f)\n",
-               fov * 180.0f / 3.14159265358979f, cam.distance, cam.mesh_scale);
+        cam = trellis::pixal3d_camera(fov, cfg.mesh_scale, 512, cfg.extend_pixel);
+        printf("[trellis] model family: pixal3d (fov %.2f deg, distance %.4f, mesh scale %.2f, extend %d px)\n",
+               fov * 180.0f / 3.14159265358979f, cam.distance, cam.mesh_scale, cfg.extend_pixel);
         if (cfg.fov_deg <= 0.0f)
             printf("      (using Pixal3D's default FOV — MoGe-2 estimation is not ported; pass"
                    " --fov if the object's perspective is noticeably wider or flatter)\n");

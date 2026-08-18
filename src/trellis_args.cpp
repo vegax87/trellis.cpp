@@ -37,6 +37,10 @@ void print_usage(const char* argv0, bool server) {
         "                          Upstream estimates this with MoGe-2; that model is not ported,\n"
         "                          so a wrong FOV shows up as geometry drifting off the silhouette.\n"
         "      --mesh-scale F      pixal3d: object scale inside the unit grid   (default 1.0)\n"
+        "      --extend-pixel N    pixal3d: how far the subject continues past the image border,\n"
+        "                          in pixels of a 512 frame (default 0 = fully inside). Raise it\n"
+        "                          when the input is cropped: the camera solve otherwise assumes\n"
+        "                          the whole object fits, and squeezes it into the grid.\n"
         "      --no-naf            pixal3d: skip NAF guided upsampling (needs no naf.gguf, but\n"
         "                          the shape/texture stages then lose their high-frequency\n"
         "                          projection branch)\n"
@@ -100,6 +104,7 @@ bool parse_args(int argc, char** argv, TrellisParams& p) {
                                                   else { fprintf(stderr, "[trellis] unknown model family: %s (trellis|pixal3d)\n", v); return false; } }
         else if (a == "--fov")                  { const char* v = need(a.c_str()); if (!v) return false; p.fov_deg = (float)atof(v); }
         else if (a == "--mesh-scale")           { const char* v = need(a.c_str()); if (!v) return false; p.mesh_scale = (float)atof(v); }
+        else if (a == "--extend-pixel")         { const char* v = need(a.c_str()); if (!v) return false; p.extend_pixel = atoi(v); }
         else if (a == "--no-naf")               { p.naf = false; }
         else if (a == "--gpu")                  { const char* v = need(a.c_str()); if (!v) return false; p.gpu = atoi(v); }
         else if (a == "-s" || a == "--seed")    { const char* v = need(a.c_str()); if (!v) return false; p.seed = (uint32_t)atoi(v); }
