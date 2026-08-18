@@ -41,11 +41,11 @@ struct TrellisParams {
     // MoGe-2 is not ported, so the FOV is a flag; 0 keeps Pixal3D's own default (49.13 deg).
     float fov_deg    = 0.0f;
     float mesh_scale = 1.0f;
-    // The camera solve assumes the object is fully inside the frame: it registers the projection
-    // grid so that the grid corner lands on the image border. When the subject is cropped by the
-    // frame that assumption fails, and the object gets compressed into the grid. --extend-pixel
-    // moves the virtual border outward by N pixels, telling the solve the object continues past
-    // the edge. It is the reference's own `extend_pixel`, which upstream never exposes.
+    // Pushes the camera's virtual image border outward, so the projection grid spans more than
+    // the frame. The reference's own `extend_pixel`, which upstream never exposes. Rarely useful
+    // here: background removal already reframes around the subject's alpha bbox, and grid cells
+    // pushed past the cutout sample the border clamp — unconditioned, and the model fills them
+    // arbitrarily.
     int extend_pixel = 0;
     // NAF guided upsampling of the DINOv3 feature map (the shape/texture stages' second proj
     // branch). Off falls back to sampling the bare feature map twice, which halves the effective

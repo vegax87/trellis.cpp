@@ -79,13 +79,21 @@ parameter and it is a flag:
 --extend-pixel N    how far the subject continues past the image border (default 0)
 ```
 
-`--extend-pixel` matters more than it sounds. The solve registers the grid corner onto
-the image border, which silently assumes the subject is *fully inside the frame*. Feed it
-an image cropped at the edges — a generator asked for a close-up, say — and the object is
-squeezed into the grid: the visible part comes out compressed and the unseen part is
-invented at the wrong scale. Raising it moves the virtual border outward, and the camera
-steps back to match (49.13° at 512: 0 px → distance 1.094, 64 px → 0.875, 128 px → 0.729).
-Upstream has the same parameter but never exposes it, since MoGe-2 sees the whole frame.
+`--extend-pixel` moves the virtual border outward, so the camera steps back to match
+(49.13° at 512: 0 px → distance 1.094, 64 px → 0.875, 128 px → 0.729). Upstream carries the
+same parameter and never exposes it.
+
+**Leave it at 0 unless you know why you are raising it.** In particular it does *not*
+rescue an input whose subject is cropped by the frame: background removal already reframes,
+cropping a square around the visible alpha bbox with a 10% margin, so the cutout that
+reaches the camera always has the subject inscribed. Extending past that stretches the grid
+over territory with no pixels behind it — the projection falls onto the border clamp, those
+cells go unconditioned, and the model fills them with whatever it likes. On a cropped
+photograph the observed result is a tail growing out of the object.
+
+There is no parameter for a cropped input, because the information is not in the file.
+Re-frame the source image with air around the subject instead; this model is pixel-aligned
+by construction, so framing buys more than any camera flag.
 
 The projection is resolution-independent once normalized, so one camera solved at 512
 serves the 1024 stages too. `trellis-test-pixal3d` pins both functions to golden values
