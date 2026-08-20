@@ -297,6 +297,14 @@ Mismatched weights fail fast rather than producing garbage:
 
 ## Known gaps
 
+- **Needs the FlashAttention V-range fix.** Proj mode adds `proj_linear(proj)` into every
+  block's residual, so its activations run larger than TRELLIS.2's. CUDA's tensor-core FA
+  kernels convert BF16 K/V to F16 internally, and those larger values overflow: before the
+  V pre-scaling in `sdpa()`, the res-1024 cascade decoded 1.19M voxels at a face/vertex
+  ratio of 1.25, a surface full of holes, while TRELLIS.2 was unaffected at the same token
+  count. With it, the same run gives 3.47M at 2.31 against 3.22M at 2.11 on the exact path
+  (identical seed), and the sparse-structure stage agrees to 0.4%. Build against an older
+  ggml and the holes come back; `--no-fa` is the escape hatch if they ever do.
 - **MoGe-2 FOV estimation is not ported.** Use `--fov`.
 - **No end-to-end numerical parity run on real weights.** The projection is pinned to
   golden values from the reference and NAF was diffed against a transcription of it
